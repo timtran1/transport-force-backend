@@ -1,0 +1,46 @@
+string_id,name,permissions,system
+super_admin_role,Super Admin,"[
+    ""user:*:*"",
+    ""role:*:*"",
+    ""implied_role:*:*"",
+    ""user_role:*:*"",
+    ""organization:*:*"",
+    ""notification:*:own"",
+    ""customer:*:*"",
+    ""tracking_session:*:*"",
+    ""tracking_event:*:*"",
+    ""filter:*:*"",
+    ""currency:*:*"",
+    ""country:*:*"",
+    ""locale:*:*"",
+    ""attachment:*:*"",
+    ""email_template:*:*"",
+    ""cron:*:*""
+]",false
+admin_role,Admin,"[
+    ""user:*:org"",
+    ""role:*:org"",
+    ""implied_role:*:org"",
+    ""user_role:*:org"",
+    ""organization:*:org"",
+    ""notification:*:own"",
+    ""tracking_session:*:org"",
+    ""tracking_event:*:org"",
+    ""filter:*:org"",
+    ""currency:*:org"",
+    ""country:*:org"",
+    ""locale:*:org"",
+    ""attachment:*:org"",
+    ""email_template:*:org"",
+    ""cron:*:org""
+]",false
+user_role,User,"[
+    ""user:write:own"",
+    ""implied_role:read:org"",
+    ""organization:read:org"",
+    ""notification:read:own"",
+    ""notification:delete:own"",
+    ""filter:read:org"",
+    ""attachment:*:own""
+]",false
+public_role,Public User,[],false

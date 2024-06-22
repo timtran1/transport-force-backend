@@ -1,0 +1,18 @@
+venv
+.idea
+.serverless
+__pycache__
+*.pyc
+node_modules
+keys
+.DS_Store
+.env
+firebase-key.json
+./data
+pg_data
+backups
+.cache
+files
+# rm this line if you want to keep your migrations
+#alembic/versions
+.vscode/settings.json

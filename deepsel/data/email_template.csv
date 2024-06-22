@@ -1,0 +1,3 @@
+string_id,name,file:content,subject
+reset_password_template,Reset Password,deepsel/templates/password_reset.html,Reset Password
+setup_password_template,Setup Password,deepsel/templates/password_setup.html,Setup Your Account
