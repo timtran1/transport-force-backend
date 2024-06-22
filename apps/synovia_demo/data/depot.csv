@@ -1,0 +1,4 @@
+string_id,name,street,city,zip,country
+depot_1,Depot 1,9 Grafton Street,Dublin,D02 RW35,Ireland
+depot_2,Depot 2,62 O'Connell Street Upper,Dublin,D01 TV20,Ireland
+depot_3,Depot 3,145 Phibsborough Rd,Dublin,D07 T660,Ireland

@@ -1,3 +1,4 @@
 import_order = [
-    # 'currency.csv',
+    'depot.csv',
+    'vehicle.csv',
 ]

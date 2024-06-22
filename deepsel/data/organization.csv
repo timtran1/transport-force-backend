@@ -1,2 +1,2 @@
 string_id,name,mail_username,mail_password,mail_from,mail_port,mail_server,mail_from_name
-1,Default Organization,dummy,dummy,dummy@dummy.com,587,stmp.dummy.com,dummy
+1,Synovia,dummy,dummy,dummy@dummy.com,587,stmp.dummy.com,dummy

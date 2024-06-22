@@ -20,6 +20,7 @@ from constants import (
 from db import Base
 from deepsel.mixins.base_model import BaseModel
 from deepsel.mixins.orm import DeleteResponse, PermissionAction
+from deepsel.models.user import UserModel
 import random
 import string
 from azure.storage.blob import BlobServiceClient
@@ -57,7 +58,7 @@ class AttachmentModel(Base, BaseModel):
     def get_by_name(cls, db: Session, name: str):
         return db.query(cls).filter(cls.name == name).first()
 
-    def create(self, db: Session, user: 'UserModel', file, *args, **kwargs) -> BaseModel:
+    def create(self, db: Session, user: UserModel, file, *args, **kwargs) -> 'AttachmentModel':
         [allowed, scope] = self._check_has_permission(PermissionAction.create, user)
         if not allowed:
             raise HTTPException(

@@ -1,0 +1,4 @@
+string_id,name,license_plate,model,make,year
+van_1,Van 1,141-KY-51,Transit,Mercedes,2015
+van_2,Van 2,151-KE-5654,Trafic,Renault,2017
+van_3,Van 3,211-D-9409,Transporter,Volkswagen,2019

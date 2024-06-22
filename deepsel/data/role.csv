@@ -16,7 +16,7 @@ super_admin_role,Super Admin,"[
     ""attachment:*:*"",
     ""email_template:*:*"",
     ""cron:*:*""
-]",false
+]",true
 admin_role,Admin,"[
     ""user:*:org"",
     ""role:*:org"",
@@ -32,8 +32,13 @@ admin_role,Admin,"[
     ""locale:*:org"",
     ""attachment:*:org"",
     ""email_template:*:org"",
-    ""cron:*:org""
-]",false
+    ""cron:*:org"",
+    ""pallet:*:org"",
+    ""depot:*:org"",
+    ""vehicle:*:org"",
+    ""location_log:*:org"",
+    ""scan:*:org""
+]",true
 user_role,User,"[
     ""user:write:own"",
     ""implied_role:read:org"",
@@ -42,5 +47,5 @@ user_role,User,"[
     ""notification:delete:own"",
     ""filter:read:org"",
     ""attachment:*:own""
-]",false
-public_role,Public User,[],false
+]",true
+public_role,Public User,[],true

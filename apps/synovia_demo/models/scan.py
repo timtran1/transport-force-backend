@@ -1,5 +1,5 @@
 
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Enum
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Float, Enum, Text
 from sqlalchemy.orm import relationship
 from db import Base
 from deepsel.mixins.base_model import BaseModel
@@ -17,14 +17,16 @@ class ScanModel(Base, BaseModel):
     __tablename__ = 'scan'
 
     id = Column(Integer, primary_key=True)
-    barcode = Column(String, nullable=False)
-    scan_type = Column(Enum(ScanType), nullable=False)
+    scan_type = Column(Enum(ScanType), nullable=False, default=ScanType.load)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    foo = Column(String)
+    bar = Column(String)
+    notes = Column(Text)
 
-    vehicle_id = Column(Integer, ForeignKey('vehicles.id'), nullable=True)
-    depot_id = Column(Integer, ForeignKey('depots.id'), nullable=True)
-    location_id = Column(Integer, ForeignKey('locations.id'), nullable=True)
+    pallet_id = Column(Integer, ForeignKey('pallet.id'), nullable=False)
 
-    vehicle = relationship('Vehicle')
-    depot = relationship('Depot')
-    location = relationship('Location')
-    user = relationship('User')
+    vehicle_id = Column(Integer, ForeignKey('vehicle.id'))
+    vehicle = relationship('VehicleModel')
+    depot_id = Column(Integer, ForeignKey('depot.id'))
+    depot = relationship('DepotModel')
