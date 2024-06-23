@@ -38,6 +38,8 @@ class UserModel(Base, ORMBaseMixin, AddressMixin, ProfileMixin):
     secret_key_2fa = Column(String)
     recovery_codes = Column(JSON, nullable=True)
 
+    location_logs = relationship('LocationLogModel', back_populates='owner')
+
     def is_public_user(self):
         return not self.signed_up or self.string_id == 'public_user'
 

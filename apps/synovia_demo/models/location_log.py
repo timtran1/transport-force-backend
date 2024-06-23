@@ -4,6 +4,7 @@ from db import Base
 from deepsel.mixins.base_model import BaseModel
 
 
+
 class LocationLogModel(Base, BaseModel):
     __tablename__ = 'location_log'
 
@@ -11,4 +12,4 @@ class LocationLogModel(Base, BaseModel):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
 
-    # owner = relationship('UserModel')
+    owner = relationship('UserModel', back_populates='location_logs')
