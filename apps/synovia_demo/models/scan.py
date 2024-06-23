@@ -23,6 +23,9 @@ class ScanModel(Base, BaseModel):
     foo = Column(String)
     bar = Column(String)
     notes = Column(Text)
+    notes2 = Column(Text)
+    even_more_notes = Column(Text)
+    notes_final = Column(Text)
 
     pallet_id = Column(Integer, ForeignKey('pallet.id'), nullable=False)
 
