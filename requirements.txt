@@ -18,3 +18,4 @@ geoip2==4.8.0
 pyotp==2.9.0
 clamd==1.0.2
 azure-storage-blob==12.19.1
+python-barcode==0.15.1
