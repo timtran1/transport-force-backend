@@ -1,4 +1,4 @@
-name: Main CI/CD Pipeline
+name: TransportForce Main CI/CD Pipeline
 
 on:
   push:
