@@ -12,4 +12,4 @@ class LocationLogModel(Base, BaseModel):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
 
-    owner = relationship('UserModel', back_populates='location_logs')
+    owner = relationship('UserModel')
