@@ -12,7 +12,7 @@ def get_pk_type(schema: Type[PYDANTIC_SCHEMA], pk_field: str) -> Any:
 
 _utils.get_pk_type = get_pk_type
 
-from fastapi import Depends, File, HTTPException, UploadFile, status
+from fastapi import BackgroundTasks, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from fastapi_crudrouter import SQLAlchemyCRUDRouter
 
@@ -171,11 +171,17 @@ class CRUDRouter(SQLAlchemyCRUDRouter):
     def _create(self, *args: Any, **kwargs: Any) -> CALLABLE:
         def route(
                 model: self.create_schema,  # type: ignore
+                background_tasks: BackgroundTasks,
                 db: Session = Depends(self.db_func),
                 user: UserModel = Depends(get_current_user),
         ) -> Model:
             try:
-                return self.db_model.create(db, user, model.dict())
+                return self.db_model.create(
+                    db,
+                    user,
+                    model.dict(),
+                    background_tasks=background_tasks
+                )
             except Exception:
                 db.rollback()
                 raise
@@ -186,12 +192,18 @@ class CRUDRouter(SQLAlchemyCRUDRouter):
         def route(
                 item_id: self._pk_type,  # type: ignore
                 model: self.update_schema,  # type: ignore
+                background_tasks: BackgroundTasks,
                 db: Session = Depends(self.db_func),
                 user: UserModel = Depends(get_current_user),
         ) -> Model:
             try:
                 db_model: Model = db.query(self.db_model).get(item_id)
-                return db_model.update(db, user, model.dict(exclude={self._pk}))
+                return db_model.update(
+                    db,
+                    user,
+                    model.dict(exclude={self._pk}),
+                    background_tasks=background_tasks
+                )
             except IntegrityError as e:
                 db.rollback()
                 self._raise(e)
@@ -201,6 +213,7 @@ class CRUDRouter(SQLAlchemyCRUDRouter):
     def _delete_one(self, *args: Any, **kwargs: Any) -> CALLABLE:
         def route(
                 item_id: self._pk_type,
+                background_tasks: BackgroundTasks,
                 db: Session = Depends(self.db_func),
                 user: UserModel = Depends(get_current_user),
                 force: Optional[bool] = False,
@@ -210,7 +223,7 @@ class CRUDRouter(SQLAlchemyCRUDRouter):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND, detail="Record not found"
                 )
-            res = db_model.delete(db, user, force=force)
+            res = db_model.delete(db, user, force=force, background_tasks=background_tasks)
             return res
 
         return route
@@ -241,11 +254,12 @@ class CRUDRouter(SQLAlchemyCRUDRouter):
 
     def _import_records(self, *args: Any, **kwargs: Any) -> Callable:
         def route(
+                background_tasks: BackgroundTasks,
                 db: Session = Depends(self.db_func),
                 user: UserModel = Depends(get_current_user),
                 file: UploadFile = File(...),
         ) -> dict:
-            result = self.db_model.import_records(db, user, file)
+            result = self.db_model.import_records(db, user, file, background_tasks=background_tasks)
             return result
 
         return route

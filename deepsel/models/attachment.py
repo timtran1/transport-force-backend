@@ -3,7 +3,7 @@ import logging
 import os
 from enum import Enum
 from typing import Optional
-
+import traceback
 from fastapi import HTTPException, status
 from sqlalchemy import Column, Enum, Integer, String
 from sqlalchemy.exc import IntegrityError
@@ -20,7 +20,6 @@ from constants import (
 from db import Base
 from deepsel.mixins.base_model import BaseModel
 from deepsel.mixins.orm import DeleteResponse, PermissionAction
-from deepsel.models.user import UserModel
 import random
 import string
 from azure.storage.blob import BlobServiceClient
@@ -58,7 +57,7 @@ class AttachmentModel(Base, BaseModel):
     def get_by_name(cls, db: Session, name: str):
         return db.query(cls).filter(cls.name == name).first()
 
-    def create(self, db: Session, user: UserModel, file, *args, **kwargs) -> 'AttachmentModel':
+    def create(self, db: Session, user: 'UserModel', file, *args, **kwargs) -> BaseModel:
         [allowed, scope] = self._check_has_permission(PermissionAction.create, user)
         if not allowed:
             raise HTTPException(
@@ -71,8 +70,12 @@ class AttachmentModel(Base, BaseModel):
             kwargs["owner_id"] = user.id
 
         # if model has organization_id, only allow users to assign organization to themselves
+        # unless they have role super_admin_role
         if hasattr(self, "organization_id"):
-            kwargs["organization_id"] = user.organization_id
+            user_roles = user.get_user_roles()
+            is_super = any([role.string_id == "super_admin_role" for role in user_roles])
+            if not is_super or not kwargs.get("organization_id"):
+                kwargs["organization_id"] = user.organization_id
 
         try:
             # Check file size limit
@@ -136,6 +139,7 @@ class AttachmentModel(Base, BaseModel):
             db.rollback()
             message = str(e.orig)
             detail = message.split("DETAIL:  ")[1]
+            logger.error(f"Error creating record: {detail}\nFull traceback: {traceback.format_exc()}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Error creating record: {detail}",

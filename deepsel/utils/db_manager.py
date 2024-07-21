@@ -44,6 +44,19 @@ def update_table_schema(
         for column in constraint["constrained_columns"]
     ]
 
+    # Modify primary key
+    existing_pk_constraint = inspector.get_pk_constraint(model_table.name)
+    existing_primary_keys = existing_pk_constraint['constrained_columns'] or []
+    model_primary_keys = [col.name for col in model_table.primary_key.columns]
+    is_composite_primary_key = len(model_primary_keys) > 1
+    is_existing_pk_removed = False
+    if existing_primary_keys != model_primary_keys:
+        if existing_primary_keys:
+            # Remove primary key constraint, it will be added back later.
+            command = text(f'ALTER TABLE "{model_table.name}" DROP CONSTRAINT {existing_pk_constraint["name"]};')
+            connection.execute(command)
+            is_existing_pk_removed = True
+
     # Modify existing columns
     for col_name, existing_column in existing_columns.items():
         if col_name in model_columns:
@@ -168,20 +181,19 @@ def update_table_schema(
                     logger.info(
                         f'Column "{col_name}" in table "{model_table.name}" has nullable=False, and cannot change type without a default value.'
                     )
+                else:
+                    # drop the column, it will be added back later
+                    logger.info(
+                        f'Column "{col_name}" in table "{model_table.name}" has changed type, dropping old column...',
+                    )
+                    command = text(
+                        f'ALTER TABLE "{model_table.name}" DROP COLUMN {col_name};'
+                    )
+                    connection.execute(command)
+                    # mark it as dropped
+                    existing_columns[col_name]["dropped"] = True
+                    # skip the rest of the loop, as the column will be added back later
                     continue
-
-                # drop the column, it will be added back later
-                logger.info(
-                    f'Column "{col_name}" in table "{model_table.name}" has changed type, dropping old column...',
-                )
-                command = text(
-                    f'ALTER TABLE "{model_table.name}" DROP COLUMN {col_name};'
-                )
-                connection.execute(command)
-                # mark it as dropped
-                existing_columns[col_name]["dropped"] = True
-                # skip the rest of the loop, as the column will be added back later
-                continue
 
             if "NULLABLE" in changes:
                 if not model_column.nullable:
@@ -191,7 +203,6 @@ def update_table_schema(
                         logger.info(
                             f'Column "{col_name}" in table "{model_table.name}" cannot be set to NOT NULL without a default value.'
                         )
-                        continue
                     else:
                         # if yes, set default to the provided value
                         if type(model_column.default.arg) == str:
@@ -225,15 +236,15 @@ def update_table_schema(
                     )
                     connection.execute(command)
 
-            _update_existed_column_constrains_case_unique(
-                model_table,
-                existing_table_schema,
-                connection,
-                model_columns,
-                col_name,
-                model_column,
-                changes,
-            )
+            if "UNIQUE" in changes:
+                _update_existed_column_constrains_case_unique(
+                    model_table,
+                    existing_table_schema,
+                    connection,
+                    model_columns,
+                    col_name,
+                    model_column,
+                )
 
             if "INDEX" in changes:
                 if model_column.index:
@@ -286,11 +297,13 @@ def update_table_schema(
             nullable = "NULL" if model_column.nullable else "NOT NULL"
             unique = "UNIQUE" if model_column.unique else ""
             default = ""
-            col_type = (
-                "SERIAL PRIMARY KEY"
-                if model_column.primary_key and col_type == "INTEGER"
-                else col_type
-            )
+            # If there is a composite primary key, do not add a primary key to a single column.
+            if not is_composite_primary_key:
+                col_type = (
+                    "SERIAL PRIMARY KEY"
+                    if model_column.primary_key and col_type == "INTEGER"
+                    else col_type
+                )
 
             is_enum = hasattr(model_column.type, "enums")
             if is_enum:
@@ -381,6 +394,15 @@ def update_table_schema(
                             "foreign_key": foreign_key,
                         }
                     )
+
+    # Check for composite primary key
+    # if primary key removed or not existed yet then create primary key
+    # If not a composite case, the primary key is already added when adding a new column (above)
+    if is_composite_primary_key and (not existing_primary_keys or is_existing_pk_removed):
+        key_columns = ', '.join(model_primary_keys)
+        command = text(f'ALTER TABLE {model_table.name} ADD PRIMARY KEY ({key_columns});')
+        connection.execute(command)
+    
     # After all columns are added, create composite unique constraint if organization_id exists
     _create_table_composite_unique_constrains(
         model_table, existing_table_schema, connection, model_columns, new_columns
@@ -440,7 +462,6 @@ def _update_existed_column_constrains_case_unique(
     model_columns,
     col_name,
     model_column,
-    changes,
 ):
     """
     Updates the unique constraints for a specified column in a database table based on the column's current schema definition.
@@ -449,8 +470,6 @@ def _update_existed_column_constrains_case_unique(
     it's part of a composite unique key (involving `organization_id`), it adds or removes a composite constraint. Otherwise,
     it manages a single-column unique constraint.
     """
-    if "UNIQUE" not in changes:
-        return
     composite_unique_constraint_name = (
         f"{model_table.name}_{col_name}_organization_id_unique"
     )

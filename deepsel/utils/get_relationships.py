@@ -1,12 +1,14 @@
 from deepsel.utils.text_cases import pascal_to_snake, snake_to_camel, snake_to_pascal, snake_to_capitalized
-from deepsel.utils.get_field_info import get_field_info
+from deepsel.utils.get_field_info import get_field_info, FieldInfo
 from sqlalchemy.ext.declarative import DeclarativeMeta
 from pydantic import BaseModel as PydanticModel
-from typing import Any
+from deepsel.utils.models_pool import models_pool
+from typing import Any, Optional
 
 technical_relationships = [
     'organization',
 ]
+
 
 class RelationshipInfo(PydanticModel):
     name: str
@@ -16,9 +18,10 @@ class RelationshipInfo(PydanticModel):
     type: str
     table_name: str
     class_name: str
-    foreign_key_field: dict = None
-    secondary: str = None
-    back_populates: Any = None
+    foreign_key_field: Optional[FieldInfo] = None
+    secondary: Optional[str] = None
+    back_populates: Optional[str] = None
+    related_class_info: Optional[Any] = None
 
 
 class RelationshipInfoResult(PydanticModel):
@@ -28,67 +31,81 @@ class RelationshipInfoResult(PydanticModel):
 
 
 def get_relationships(cls: [DeclarativeMeta]) -> RelationshipInfoResult:
-    result = {
-        'one2many': [],
-        'many2many': [],
-        'many2one': [],
+    result = RelationshipInfoResult()
+    fields: dict[str: FieldInfo] = {
+        m.key: get_field_info(m) for m in cls.__table__.columns
     }
-    fields = {
-        m.key: get_field_info(m).dict() for m in cls.__table__.columns
-    }
-    foreign_key_fields = [field for field in fields.values() if field['is_foreign_key']]
-    foreign_key_models = [field['related_table'] for field in foreign_key_fields]
+    foreign_key_fields: list[FieldInfo] = [field for field in fields.values() if field.is_foreign_key]
+    foreign_key_models: list[str] = [field.related_table for field in foreign_key_fields]
 
     for name, value in vars(cls).items():
         if name in technical_relationships:
             continue
         if hasattr(value, 'prop') and hasattr(value.prop, 'argument') and value.prop.argument:
-            class_name = value.prop.argument
-            # check if string type, otherwise it is a relatioship from backref which we dont support
-            if type(class_name) != str:
+            model_class_name = value.prop.argument
+            # check if string type, otherwise it is a relationship from backref which we dont support
+            if type(model_class_name) != str:
                 continue
 
-            table_name = pascal_to_snake(class_name.replace('Model', ''))
+            table_name = list(filter(lambda key: models_pool[key].__name__ == model_class_name, models_pool.keys()))[0]
+            model_class = models_pool[table_name]
 
             if value.prop._init_args.secondary.argument:
                 # secondary table is defined, this is a many2many relationship
-                result['many2many'].append({
-                    "name": name,
-                    "camel_name": snake_to_camel(name),
-                    "pascal_name": snake_to_pascal(name),
-                    "human_name": snake_to_capitalized(name),
-                    "type": 'many2many',
-                    "table_name": table_name,
-                    "class_name": class_name,
-                    "secondary": value.prop._init_args.secondary.argument,
-                    "back_populates": value.prop.back_populates,
-                })
+                rel_info = RelationshipInfo(
+                    name=name,
+                    camel_name=snake_to_camel(name),
+                    pascal_name=snake_to_pascal(name),
+                    human_name=snake_to_capitalized(name),
+                    type='many2many',
+                    table_name=table_name,
+                    class_name=model_class_name,
+                    secondary=value.prop._init_args.secondary.argument,
+                    back_populates=value.prop.back_populates
+                )
+
+                result.many2many.append(rel_info)
 
             # check if there is a foreign key field with the same model name
             elif table_name in foreign_key_models:
                 #  this is a many2one relationship
-                result['many2one'].append({
-                    "name": name,
-                    "camel_name": snake_to_camel(name),
-                    "pascal_name": snake_to_pascal(name),
-                    "human_name": snake_to_capitalized(name),
-                    "type": 'many2one',
-                    "table_name": table_name,
-                    "class_name": class_name,
-                    "foreign_key_field":
-                        [field for field in foreign_key_fields if field['related_table'] == table_name][0],
-                })
+                foreign_key_field: FieldInfo = \
+                    [field for field in foreign_key_fields if field.related_table == table_name][0]
+                rel_info = RelationshipInfo(
+                    name=name,
+                    camel_name=snake_to_camel(name),
+                    pascal_name=snake_to_pascal(name),
+                    human_name=snake_to_capitalized(name),
+                    type='many2one',
+                    table_name=table_name,
+                    class_name=model_class_name,
+                    foreign_key_field=foreign_key_field
+                )
+
+                result.many2one.append(rel_info)
             else:
                 # most likely this is a one2many relationship
-                result['one2many'].append({
-                    "name": name,
-                    "camel_name": snake_to_camel(name),
-                    "pascal_name": snake_to_pascal(name),
-                    "human_name": snake_to_capitalized(name),
-                    "type": 'one2many',
-                    "table_name": table_name,
-                    "class_name": class_name,
-                    "back_populates": value.prop.back_populates,
-                })
+                parent_key_field: FieldInfo = get_one2many_parent_id(model_class, cls.__table__.name)
+                rel_info = RelationshipInfo(
+                    name=name,
+                    camel_name=snake_to_camel(name),
+                    pascal_name=snake_to_pascal(name),
+                    human_name=snake_to_capitalized(name),
+                    type='one2many',
+                    table_name=table_name,
+                    class_name=model_class_name,
+                    foreign_key_field=parent_key_field,
+                    back_populates=value.prop.back_populates
+                )
 
-    return RelationshipInfoResult(**result)
+                result.one2many.append(rel_info)
+    return result
+
+
+def get_one2many_parent_id(child_model_class: [DeclarativeMeta], parent_table_name: str) -> [FieldInfo, None]:
+    for column in child_model_class.__table__.columns:
+        col_info = get_field_info(column)
+        if col_info.is_foreign_key:
+            if col_info.related_table == parent_table_name:
+                return col_info
+    return None

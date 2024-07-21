@@ -20,15 +20,15 @@ credentials_exception = HTTPException(
 
 
 def get_current_user(
-    token: Optional[str] = Depends(oauth2_scheme), db: Session = Depends(get_db)
+        token: Optional[str] = Depends(oauth2_scheme), db: Session = Depends(get_db)
 ) -> [UserModel]:
     if token is None:
-        # public user with string_id = 'publicuser'
+        # public user with string_id = 'public_user'
         user = (
             db.query(UserModel)
-            .filter(
-                UserModel.string_id == "public_user",
-                UserModel.organization_id == DEFAULT_ORG_ID,
+            .filter_by(
+                string_id="public_user",
+                organization_id=DEFAULT_ORG_ID,
             )
             .first()
         )

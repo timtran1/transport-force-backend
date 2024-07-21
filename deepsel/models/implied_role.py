@@ -1,13 +1,10 @@
 from sqlalchemy import Column, ForeignKey, Integer
-from sqlalchemy.orm import relationship
-from deepsel.mixins.base_model import BaseModel
+from deepsel.mixins.orm import ORMBaseMixin
 from db import Base
 
 
-class ImpliedRoleModel(Base, BaseModel):
+class ImpliedRoleModel(Base, ORMBaseMixin):
     __tablename__ = "implied_role"
 
-    id = Column(Integer, primary_key=True)
-
-    role_id = Column(Integer, ForeignKey("role.id"))
-    implied_role_id = Column(Integer, ForeignKey("role.id"))
+    role_id = Column(Integer, ForeignKey("role.id"), nullable=False, primary_key=True)
+    implied_role_id = Column(Integer, ForeignKey("role.id"), nullable=False, primary_key=True)

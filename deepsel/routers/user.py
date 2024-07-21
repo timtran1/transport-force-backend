@@ -18,7 +18,7 @@ from deepsel.utils.generate_crud_schemas import (
 from deepsel.utils.get_current_user import get_current_user
 from db import get_db
 from pydantic import BaseModel
-import pyotp 
+import pyotp
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ async def send_set_password_email(db: Session, organization_name: str, user: Mod
     token = jwt.encode(
         {"uid": user.id}, RESET_PASSWORD_SECRET, algorithm=AUTH_ALGORITHM
     )
-    context={
+    context = {
         "name": user.name or user.username,
         "username": user.username,
         "first_name": user.first_name,
@@ -41,16 +41,20 @@ async def send_set_password_email(db: Session, organization_name: str, user: Mod
 
     template = db.query(EmailTemplateModel).filter_by(string_id="setup_password_template").first()
     ok = await template.send(db, [user.email], context)
-    logger.info(f"Password setup email sent to {user.email}")
+    if not ok:
+        logger.error(f"Failed to send password setup email to {user.email}")
+    else:
+        logger.info(f"Password setup email sent to {user.email}")
     return ok
+
 
 class UserCustomRouter(CRUDRouter):
     def _create(self, *args: Any, **kwargs: Any) -> CALLABLE:
         def route(
-            model: self.create_schema,  # type: ignore
-            background_tasks: BackgroundTasks,
-            db: Session = Depends(self.db_func),
-            user: Model = Depends(get_current_user),
+                model: self.create_schema,  # type: ignore
+                background_tasks: BackgroundTasks,
+                db: Session = Depends(self.db_func),
+                user: Model = Depends(get_current_user),
         ) -> [Model]:
             new_user = self.db_model.create(db, user, model.dict())
 
@@ -95,24 +99,24 @@ def get_me(user: Model = Depends(get_current_user)):
     return current_user
 
 
-
 class Info2Fa(BaseModel):
     is_use_2fa: bool = False
     totp_uri: str = ""
     recovery_codes: list[str] = []
 
+
 @router.put("/{id}/2fa-config")
 def update_2fa_config(
-    id: int,
-    is_use_2fa: Annotated[bool, Body(embed=True)],
-    confirmed: Annotated[bool, Body(embed=True)] = False,
-    user: Model = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        id: int,
+        is_use_2fa: Annotated[bool, Body(embed=True)],
+        confirmed: Annotated[bool, Body(embed=True)] = False,
+        user: Model = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ) -> Info2Fa:
     user_to_update = db.query(Model).filter(Model.id == id).first()
     if not user_to_update:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    
+
     if confirmed:
         # in case confirm using 2fa. secret_key already generated before. no need to create secret_key again.
         if is_use_2fa:
@@ -129,36 +133,35 @@ def update_2fa_config(
             user_to_update.recovery_codes = None
         db.commit()
         return Info2Fa(
-            is_use_2fa=is_use_2fa, 
+            is_use_2fa=is_use_2fa,
             recovery_codes=json.loads(user_to_update.recovery_codes) if is_use_2fa else [])
-    
+
     # if not confirmed => only get secret_key (create if not exist) for showing QR
     if not user_to_update.secret_key_2fa:
         secret_key = pyotp.random_base32()
         user_to_update.secret_key_2fa = secret_key
         db.commit()
-    totp_uri = pyotp.totp.TOTP(user_to_update.secret_key_2fa).provisioning_uri( 
-        name=user_to_update.username, 
-        issuer_name='Deepsel'
+    totp_uri = pyotp.totp.TOTP(user_to_update.secret_key_2fa).provisioning_uri(
+        name=user_to_update.username,
+        issuer_name='TransportForce'
     )
-    return Info2Fa(totp_uri = totp_uri)
-
+    return Info2Fa(totp_uri=totp_uri)
 
 
 @router.get("/{id}/2fa-config")
 def get_2fa_uri(
-    id: int,
-    current_user: Model = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        id: int,
+        current_user: Model = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ) -> Info2Fa:
     user = db.query(Model).filter(Model.id == id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     if user.is_use_2fa:
-        totp_uri = pyotp.totp.TOTP(user.secret_key_2fa).provisioning_uri( 
-            name=user.username, 
-            issuer_name='Deepsel'
+        totp_uri = pyotp.totp.TOTP(user.secret_key_2fa).provisioning_uri(
+            name=user.username,
+            issuer_name='TransportForce'
         )
         return Info2Fa(is_use_2fa=user.is_use_2fa, totp_uri=totp_uri)
 

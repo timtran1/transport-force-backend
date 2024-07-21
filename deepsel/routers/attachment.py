@@ -41,25 +41,29 @@ class UploadFileResponse(BaseModel):
     filename: str
 
 
-@router.post("/", response_model=ReadSchema)
-async def upload_file(
-        file: UploadFile = File(...),
+@router.post("", response_model=list[ReadSchema])
+@router.post("/", response_model=list[ReadSchema])
+async def upload_files(
+        files: list[UploadFile] = File(...),
         user: UserModel = Depends(get_current_user),
         db: Session = Depends(get_db),
 ):
-    if CLAMAV_HOST:
-        clamav = ClamdNetworkSocket(CLAMAV_HOST, 3310)
-        scan_result = clamav.instream(file.file)
-        file.file.seek(0)  # reset file pointer to the beginning
-        ok = scan_result['stream'][0] == 'OK'
-        if not ok:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File infected!"
-            )
+    instances = []
+    for file in files:
+        if CLAMAV_HOST:
+            clamav = ClamdNetworkSocket(CLAMAV_HOST, 3310)
+            scan_result = clamav.instream(file.file)
+            file.file.seek(0)  # reset file pointer to the beginning
+            ok = scan_result['stream'][0] == 'OK'
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="File infected!"
+                )
 
-    instance = Model().create(db=db, user=user, file=file)
-    return instance
+        instance = Model().create(db=db, user=user, file=file)
+        instances.append(instance)
+    return instances
 
 
 @router.get("/serve/{file_name}")

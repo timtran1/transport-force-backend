@@ -18,8 +18,8 @@ class UnitInterval(enum.Enum):
     hours = "hours"
     days = "days"
     weeks = "weeks"
-    months = "months"
-    years = "years"
+    # months and years are not supported by timedelta
+    # and we don't need those edge cases for now
 
 
 class CronModel(Base, ORMBaseMixin):

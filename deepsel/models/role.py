@@ -21,11 +21,3 @@ class RoleModel(Base, ORMBaseMixin):
         primaryjoin='RoleModel.id==ImpliedRoleModel.role_id',
         secondaryjoin='RoleModel.id==ImpliedRoleModel.implied_role_id',
     )
-
-
-class UserRoleModel(Base, ORMBaseMixin):
-    __tablename__ = 'user_role'
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('user.id'), nullable=False)
-    role_id = Column(Integer, ForeignKey('role.id'), nullable=False)

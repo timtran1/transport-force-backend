@@ -20,26 +20,33 @@ class DeleteCheckResponse(BaseModel):
     to_set_null: dict[str, list[str]]
 
 
-@router.get("/delete_check/{model}/{id}", response_model=DeleteCheckResponse)
+@router.get("/delete_check/{model}/{ids}", response_model=DeleteCheckResponse)
 async def delete_check(
         model: str,  # table name
-        id: int,
+        ids: str,  # comma separated list of ids
         db: Session = Depends(get_db),
         user: UserModel = Depends(get_current_user),
 ):
+    if model == "xray":
+        model = "tracking_session"
+    elif model == "xray_event":
+        model = "tracking_event"
+
+    ids = ids.split(',')
+
     Model = models_pool.get(model, None)
     if Model is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not found")
 
-    record = db.query(Model).get(id)
-    if not record:
+    records = db.query(Model).filter(Model.id.in_(ids)).all()
+    if not records:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
 
-    affected_records = get_delete_cascade_records_recursively(db, record)
+    affected_records = get_delete_cascade_records_recursively(db, records)
 
     return {
-        'to_delete': {k: [row.display_name for row in v] for k, v in affected_records.to_delete.items()},
-        'to_set_null': {k: [row.display_name for row in v] for k, v in affected_records.to_set_null.items()}
+        'to_delete': {k: [str(row.record) for row in v] for k, v in affected_records.to_delete.items()},
+        'to_set_null': {k: [str(row.record) for row in v] for k, v in affected_records.to_set_null.items()}
     }
 
 

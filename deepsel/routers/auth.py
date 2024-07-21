@@ -24,7 +24,7 @@ from constants import (
 )
 from db import get_db
 from deepsel.models.organization import OrganizationModel
-from deepsel.models.role import RoleModel, UserRoleModel
+from deepsel.models.role import RoleModel
 from deepsel.models.user import UserModel
 from deepsel.routers.user import CurrentUser
 from deepsel.utils import generate_recovery_codes
@@ -411,7 +411,7 @@ async def check_2fa_config(
         db.commit()
 
     totp_uri = pyotp.totp.TOTP(user.secret_key_2fa).provisioning_uri(
-        name=user.username, issuer_name="Mini Tender"
+        name=user.username, issuer_name="TransportForce"
     )
     return Info2FaDto(
         is_organization_require_2fa=is_organization_require_2fa,

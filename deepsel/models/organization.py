@@ -12,7 +12,7 @@ class OrganizationModel(Base, ORMBaseMixin, AddressMixin):
     __tablename__ = "organization"
 
     id = Column(Integer, primary_key=True)
-    name = Column(String)
+    name = Column(String, unique=True, nullable=False)
 
     image_attachment_id = Column(Integer, ForeignKey("attachment.id"))
     image = relationship("AttachmentModel", foreign_keys=[image_attachment_id])

@@ -2,7 +2,7 @@ from sqlalchemy import Enum
 from deepsel.utils.text_cases import snake_to_camel, snake_to_capitalized
 from sqlalchemy import Column
 from pydantic import BaseModel as PydanticModel
-from typing import Any
+from typing import Any, Optional
 
 
 class FieldInfo(PydanticModel):
@@ -13,10 +13,10 @@ class FieldInfo(PydanticModel):
     type: str
     is_foreign_key: bool
     required: bool
-    default: Any = None
-    enum_values: list = None
-    related_table: str = None
-    related_human_name: str = None
+    default: Optional[Any] = None
+    enum_values: Optional[list] = None
+    related_table: Optional[str] = None
+    related_human_name: Optional[str] = None
 
 
 def get_field_info(field: [Column]) -> FieldInfo:

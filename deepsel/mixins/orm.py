@@ -1,20 +1,21 @@
 import csv
 import logging
-from datetime import datetime, UTC
-from enum import Enum
+from datetime import datetime
+import enum
 from io import StringIO
 from typing import Any, Optional
-
+import traceback
 from dateutil.parser import parse as parse_date
 from fastapi import File, HTTPException, status
 from fastapi_crudrouter.core.sqlalchemy import PAGINATION
 from pydantic import BaseModel as PydanticModel
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, and_, or_
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Enum, and_, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.orm import Session
 from deepsel.utils.models_pool import models_pool
-
+from deepsel.utils.generate_crud_schemas import _get_relationships_class_map
+from deepsel.utils.get_relationships import get_relationships, get_one2many_parent_id
 from deepsel.utils.check_delete_cascade import (
     AffectedRecordResult,
     get_delete_cascade_records_recursively,
@@ -23,7 +24,13 @@ from deepsel.utils.check_delete_cascade import (
 logger = logging.getLogger(__name__)
 
 
-class Operator(str, Enum):
+class RelationshipRecordCollection(PydanticModel):
+    relationship_name: str
+    linked_records: list[dict[str, Any]] = []
+    linked_model_class: Any
+
+
+class Operator(str, enum.Enum):
     eq = "="
     ne = "!="
     in_ = "in"
@@ -46,7 +53,7 @@ class SearchQuery(PydanticModel):
     OR: Optional[list[SearchCriteria]] = []
 
 
-class OrderDirection(str, Enum):
+class OrderDirection(str, enum.Enum):
     asc = "asc"
     desc = "desc"
 
@@ -56,14 +63,14 @@ class OrderByCriteria(PydanticModel):
     direction: OrderDirection = "asc"
 
 
-class PermissionScope(str, Enum):
+class PermissionScope(str, enum.Enum):
     none = "none"
     own = "own"
     org = "org"
     all = "*"
 
 
-class PermissionAction(str, Enum):
+class PermissionAction(str, enum.Enum):
     read = "read"
     write = "write"
     delete = "delete"
@@ -85,11 +92,12 @@ class ORMBaseMixin(object):
     def __tablename__(cls):
         return cls.__name__.lower()
 
-    created_at = Column(DateTime, default=lambda x: datetime.now(UTC))
-    updated_at = Column(DateTime, default=lambda x: datetime.now(UTC), onupdate=lambda x: datetime.now(UTC))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     string_id = Column(String, unique=True)
     system = Column(Boolean, default=False)
     active = Column(Boolean, default=True)
+    is_technical = Column(Boolean, default=False)
 
     def __repr__(self):
         if hasattr(self, "name"):
@@ -105,26 +113,38 @@ class ORMBaseMixin(object):
         else:
             identifier = ""
 
-        return f"<{self.__class__.__name__.replace('Model', '')}:{identifier} (id {self.id})>"
+        if hasattr(self, "string_id") and self.string_id:
+            return f"<{self.__class__.__name__.replace('Model', '')}: {identifier} (id {self.string_id})>"
+        elif hasattr(self, "id"):
+            return f"<{self.__class__.__name__.replace('Model', '')}: {identifier} (id {self.id})>"
+
+        return f"<{self.__class__.__name__.replace('Model', '')}: {identifier}"
+
+    def __str__(self):
+        return self.__repr__()
 
     @classmethod
     def create(
-            self, db: Session, user: "UserModel", values: dict, *args, **kwargs
+            cls, db: Session, user: "UserModel", values: dict, commit: Optional[bool] = True, *args, **kwargs
     ) -> "[ORMBaseMixin]":
-        [allowed, scope] = self._check_has_permission(PermissionAction.create, user)
+        [allowed, scope] = cls._check_has_permission(PermissionAction.create, user)
         if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to create this resource type",
+                detail=f"You do not have permission to create this resource type: {cls.__tablename__}",
             )
 
         # if model has owner_id, only allow users to assign ownership to themselves
-        if hasattr(self, "owner_id"):
+        if hasattr(cls, "owner_id"):
             values["owner_id"] = user.id
 
         # if model has organization_id, only allow users to assign organization to themselves
-        if hasattr(self, "organization_id"):
-            values["organization_id"] = user.organization_id
+        # unless they have role super_admin_role
+        if hasattr(cls, "organization_id"):
+            user_roles = user.get_user_roles()
+            is_super = any([role.string_id == "super_admin_role" for role in user_roles])
+            if not is_super or not values.get("organization_id"):
+                values["organization_id"] = user.organization_id
 
         # for every value in the format of <table_name>/<string_id>, get the record instance
         for key, value in values.items():
@@ -136,27 +156,97 @@ class ORMBaseMixin(object):
                         record = db.query(model).filter_by(string_id=string_id).first()
                         if record:
                             values[key] = record.id
-                except Exception as e:
-                    logger.error(f"Error finding record with string_id: {e}")
+                        else:
+                            logger.error(f"Error finding record with string_id: {value}")
+                except:
+                    pass
+
+        relationships = get_relationships(cls)
+        relationship_classes = _get_relationships_class_map(cls)
+
+        many2many_records_to_link: list[RelationshipRecordCollection] = []
+        one2many_records_to_create: list[RelationshipRecordCollection] = []
+
+        # pop many2many relationship lists from values
+        for relationship in relationships.many2many:
+            if relationship.name in values:
+                linked_records = values.pop(relationship.name)
+                if linked_records:
+                    many2many_records_to_link.append(
+                        RelationshipRecordCollection(
+                            relationship_name=relationship.name,
+                            linked_records=linked_records,
+                            linked_model_class=relationship_classes[relationship.name],
+                        )
+                    )
+
+        # set attr for one2many relationships
+        for relationship in relationships.one2many:
+            if relationship.name in values:
+                linked_records = values.pop(relationship.name)
+                if linked_records:
+                    one2many_records_to_create.append(
+                        RelationshipRecordCollection(
+                            relationship_name=relationship.name,
+                            linked_records=linked_records,
+                            linked_model_class=relationship_classes[relationship.name],
+                        )
+                    )
 
         try:
-            instance = self(**values)
+            instance = cls(**values)
             db.add(instance)
-            db.commit()
-            db.refresh(instance)
+
+            # now link many2many records
+            if many2many_records_to_link:
+                for collection in many2many_records_to_link:
+                    LinkedModel = collection.linked_model_class
+                    ids = [record['id'] for record in collection.linked_records]
+                    record_instances = db.query(LinkedModel).filter(LinkedModel.id.in_(ids)).all()
+                    setattr(instance, collection.relationship_name, record_instances)
+
+            if commit:
+                db.commit()
+                db.refresh(instance)
+
+                # now create the one2many records
+                # since now we have the instance id after commit
+                if one2many_records_to_create:
+                    for collection in one2many_records_to_create:
+                        LinkedModel = collection.linked_model_class
+                        parent_key_field = get_one2many_parent_id(LinkedModel, cls.__tablename__)
+                        if parent_key_field:
+                            for record_values in collection.linked_records:
+                                record_values[parent_key_field.name] = instance.id
+                                record_instance = LinkedModel.create(db, user, record_values)
+                                db.add(record_instance)
+                    db.commit()
+
             return instance
         # catch unique constraint violation
         except IntegrityError as e:
             db.rollback()
             message = str(e.orig)
             detail = message.split("DETAIL:  ")[1]
+            logger.error(f"Error creating record: {detail}\nFull traceback: {traceback.format_exc()}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Error creating record: {detail}",
             )
+        # catch permissions error
+        except HTTPException as e:
+            db.rollback()
+            raise e
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating record: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"An error occurred!",
+            )
 
     def update(
-            self, db: Session, user: "UserModel", values: dict, *args, **kwargs
+            self, db: Session, user: "UserModel", values: dict, commit: Optional[bool] = True, *args, **kwargs
     ) -> "[ORMBaseMixin]":
         # check if system record
         if self.system:
@@ -169,7 +259,7 @@ class ORMBaseMixin(object):
         if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to update this resource type",
+                detail=f"You do not have permission to update this resource type: {self.__tablename__}",
             )
 
         # if highest scope is own, only allow users to update their own resources
@@ -179,7 +269,7 @@ class ORMBaseMixin(object):
                 if self.owner_id != user.id:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="You do not have permission to update this resource",
+                        detail=f"You do not have permission to update this resource",
                     )
             # else if model is User, only allow users to update themselves
             elif self.__tablename__ == "user":
@@ -199,22 +289,62 @@ class ORMBaseMixin(object):
                         detail="You do not have permission to update this resource",
                     )
 
-        for field, value in values.items():
-            if hasattr(self, field):
-                setattr(self, field, value)
-
         try:
-            db.commit()
-            db.refresh(self)
+            relationships = get_relationships(self.get_class())
+            relationship_classes = _get_relationships_class_map(self.get_class())
+
+            many2many_records_to_update: list[RelationshipRecordCollection] = []
+
+            # pop many2many relationship lists from values
+            for relationship in relationships.many2many:
+                if relationship.name in values:
+                    linked_records = values.pop(relationship.name)
+                    if linked_records:
+                        many2many_records_to_update.append(
+                            RelationshipRecordCollection(
+                                relationship_name=relationship.name,
+                                linked_records=linked_records,
+                                linked_model_class=relationship_classes[relationship.name],
+                            )
+                        )
+                    elif linked_records == []:
+                        # this case, it removes all many2many records
+                        setattr(self, relationship.name, [])
+
+            # update all values
+            for field, value in values.items():
+                if hasattr(self, field):
+                    setattr(self, field, value)
+
+            # now update many2many records
+            for collection in many2many_records_to_update:
+                LinkedModel = collection.linked_model_class
+                ids = [record['id'] for record in collection.linked_records]
+                record_instances = db.query(LinkedModel).filter(LinkedModel.id.in_(ids)).all()
+                setattr(self, collection.relationship_name, record_instances)
+
+            if commit:
+                db.commit()
+                db.refresh(self)
+
             return self
         # catch unique constraint violation
         except IntegrityError as e:
-            db.rollback()
+            if commit:
+                db.rollback()
             message = str(e.orig)
             detail = message.split("DETAIL:  ")[1]
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Error updating record: {detail}",
+            )
+        except Exception as e:
+            if commit:
+                db.rollback()
+            logger.error(f"Error updating record: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"An error occurred!",
             )
 
     def delete(
@@ -222,6 +352,7 @@ class ORMBaseMixin(object):
             db: Session,
             user: "UserModel",
             force: Optional[bool] = False,
+            commit: Optional[bool] = True,
             *args,
             **kwargs,
     ) -> [DeleteResponse]:
@@ -267,7 +398,7 @@ class ORMBaseMixin(object):
                     )
 
         affected_records: AffectedRecordResult = get_delete_cascade_records_recursively(
-            db, self
+            db, [self]
         )
         if (
                 affected_records.to_delete.keys() or affected_records.to_set_null.keys()
@@ -289,16 +420,26 @@ class ORMBaseMixin(object):
                     setattr(item.record, item.affected_field, None)
 
             db.delete(self)
-            db.commit()
+            if commit:
+                db.commit()
             return {"success": True}
 
         except IntegrityError as e:
-            db.rollback()
+            if commit:
+                db.rollback()
             message = str(e.orig)
             detail = message.split("DETAIL:  ")[1]
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Error deleting record: {detail}",
+            )
+        except Exception as e:
+            if commit:
+                db.rollback()
+            logger.error(f"Error deleting record: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"An error occurred!",
             )
 
     @classmethod
@@ -447,6 +588,17 @@ class ORMBaseMixin(object):
                     if is_datetime:
                         value = parse_date(value)
 
+                    # check if field is enum, if yes the value should be the enum value
+                    if field in model.__table__.columns:
+                        column_type = model.__table__.columns[field].type
+                        if column_type.__class__.__name__ == "Enum":
+                            value = column_type.python_type(value)
+                    else:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f'Field "{field}" does not exist on this resource type',
+                        )
+
                     condition_expr = None
                     match operator:
                         case "=":
@@ -592,99 +744,90 @@ class ORMBaseMixin(object):
             *args,
             **kwargs,
         )
-        data = search_result["data"]
+        records = search_result["data"]
         csv_string = StringIO()
-        if len(data) == 0:
-            return csv_string
-        fieldnames = list(data[0]._asdict().keys())
-        csv_writer = csv.DictWriter(csv_string, fieldnames=fieldnames)
-        csv_writer.writeheader()
-        # Write each search result to the CSV file
 
-        for item in data:
-            csv_writer.writerow(item._asdict())
+        if len(records) == 0:
+            return csv_string
+
+        # Convert the records to a list of dictionaries
+        records = [rec.serialize() for rec in records]
+
+        for record in records:
+            record.pop('_sa_instance_state', None)
+
+        column_names = [column.name for column in cls.__table__.columns]
+        csv_writer = csv.DictWriter(csv_string, fieldnames=column_names)
+        csv_writer.writeheader()
+        csv_writer.writerows(records)
+
         return csv_string
 
     @classmethod
     def import_records(
             cls, db: Session, user: "UserModel", csvfile: File, *args, **kwargs
     ):
-        [allowed_write, scope] = cls._check_has_permission(PermissionAction.write, user)
-        [allowed_create, scope] = cls._check_has_permission(PermissionAction.create, user)
-        if not allowed_write or not allowed_create:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to import this resource type",
-            )
-
         contents = csvfile.file.read()
         buffer = StringIO(contents.decode("utf-8"))
         csv_reader = csv.DictReader(buffer)
+        data: list[dict] = list(csv_reader)
+
         try:
-            cls._create_or_update_bulk_objects(db, user, csv_reader)
+            for row in data:
+                row_data: dict = cls._convert_csv_row(row)
+                instance = None
+
+                if row_data.get('id'):
+                    instance = db.query(cls).get(row_data.pop('id'))
+                elif row_data.get('string_id'):
+                    query = db.query(cls).filter_by(string_id=row_data.get('string_id'))
+                    if hasattr(cls, 'organization_id'):
+                        query = query.filter_by(organization_id=user.organization_id)
+                    instance = query.first()
+
+                if instance:
+                    instance.update(db, user, row_data, commit=False)
+                else:
+                    cls.create(db, user, row_data, commit=False)
+
+            db.commit()
+
+        except IntegrityError as e:
+            db.rollback()
+            message = str(e.orig)
+            detail = message.split("DETAIL:  ")[1]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error importing records: {detail}",
+            )
         except Exception as e:
-            logger.error("ORMBaseMixin:import_records failed. Error: %s", e.detail)
-            raise e
+            db.rollback()
+            logger.error(f"Error importing record: \nFull traceback: {traceback.format_exc()}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="An error occurred!",
+            )
         finally:
             buffer.close()
             csvfile.file.close()
 
         return {"success": True}
 
-    @classmethod
-    def _create_or_update_bulk_objects(cls, db: Session, user: "UserModel", data: csv.DictReader):
-        header_keys = cls()._asdict().keys()
-        header_csv = data.fieldnames
-
-        # pop non existing fields
-        for key in header_csv:
-            if key not in header_keys:
-                data.fieldnames.remove(key)
-
-        to_update = []
-        to_create = []
-
-        for item in data:
-            item = cls._convert_json_based_on_model(item)
-            obj = None
-
-            if item.get("id"):
-                obj = db.query(cls).get(item["id"])
-            elif item.get("string_id"):
-                query = db.query(cls).filter_by(string_id=item["string_id"])
-                if hasattr(cls, "organization_id"):
-                    query = query.filter_by(organization_id=user.organization_id)
-                obj = query.first()
-
-            if obj:
-                update_data = item.copy()
-                update_data["id"] = obj.id
-                update_data["string_id"] = obj.string_id
-                to_update.append(update_data)
-            else:
-                to_create.append(item)
-
-        try:
-            if to_update:
-                db.bulk_update_mappings(cls, to_update)
-            if to_create:
-                db.bulk_insert_mappings(cls, to_create)
-            db.commit()
-        except IntegrityError as e:
-            db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="IntegrityError: " + str(e),
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Unknown error: " + str(e),
-            )
+    def serialize(self) -> dict:
+        result = self.__dict__.copy()
+        # Convert Enum values to their actual string values
+        # instead of the Enum object key
+        for key, value in self.__dict__.items():
+            if isinstance(value, enum.Enum):
+                result[key] = value.value
+        # Remove the SQLAlchemy internal state from the records
+        result.pop('_sa_instance_state', None)
+        return result
 
     @classmethod
-    def _convert_field(cls, value, column_type):
-        if value == "" and column_type != String:
+    def _convert_csv_field_value(cls, value: Any, column: Column) -> Any:
+        column_type = type(column.type)
+        if value == "":
             return None
         elif column_type == Boolean:
             return value.lower() in ["true", "1", "t", "y", "yes"]
@@ -692,13 +835,19 @@ class ORMBaseMixin(object):
             return int(value)
         elif column_type == DateTime:
             return datetime.fromisoformat(value)
+        elif column_type == Enum:
+            return column.type.python_type(value)
         return value
 
     @classmethod
-    def _convert_json_based_on_model(cls, data):
+    def _convert_csv_row(cls, row: dict) -> dict:
+        result = {}
         for column in cls.__table__.columns:
             field_name = column.name
-            if field_name in data and data[field_name] is not None:
-                column_type = type(column.type)
-                data[field_name] = cls._convert_field(data[field_name], column_type)
-        return data
+            if field_name in row and row[field_name] is not None:
+                result[field_name] = cls._convert_csv_field_value(row[field_name], column)
+        return result
+
+    @classmethod
+    def get_class(cls):
+        return cls

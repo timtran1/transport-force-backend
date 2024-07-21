@@ -93,6 +93,11 @@ def import_csv_data(
                                 # check if field is JSON, if yes we load the json string
                                 if hasattr(model, field_name) and str(getattr(model, field_name).type) == 'JSON':
                                     row[field_name] = json.loads(row[field_name])
+                        elif source_type == 'json':
+                            json_str = row.pop(key)
+                            row[field_name] = json_str
+                            if hasattr(model, field_name) and str(getattr(model, field_name).type) == 'JSON':
+                                row[field_name] = json.loads(json_str)
 
 
                     # check if field is boolean, if yes convert it to boolean
