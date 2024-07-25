@@ -129,6 +129,7 @@ These methods are:
 - `search`
 - `update`
 - `delete`
+- `bulk_delete`
 
 You can find out how these methods work in `deepsel/mixins/orm.py`.
 
@@ -609,7 +610,7 @@ async def custom_endpoint():
 
 ### Optional: Read-Only Models
 
-For read-only models, you can disable the update, delete, and create routes by setting the corresponding parameters to `False`:
+For read-only models, you can disable the update, delete, bulk_delete and create routes by setting the corresponding parameters to `False`:
 
 ```python
 router = CRUDRouter(
@@ -619,6 +620,7 @@ router = CRUDRouter(
     dependencies=[Depends(get_current_user)],
     update_route=False,
     delete_one_route=False,
+    bulk_delete_route=False,
     create_route=False
 )
 ```

@@ -12,7 +12,7 @@ def get_pk_type(schema: Type[PYDANTIC_SCHEMA], pk_field: str) -> Any:
 
 _utils.get_pk_type = get_pk_type
 
-from fastapi import BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from fastapi import BackgroundTasks, Depends, File, HTTPException, UploadFile, status, Query
 from fastapi.responses import StreamingResponse
 from fastapi_crudrouter import SQLAlchemyCRUDRouter
 
@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from db import get_db
 from deepsel.mixins.base_model import BaseModel as Model
-from deepsel.mixins.orm import DeleteResponse, OrderByCriteria, SearchQuery
+from deepsel.mixins.orm import DeleteResponse, OrderByCriteria, SearchQuery, BulkDeleteResponse
 from deepsel.models.user import UserModel
 from deepsel.utils.get_current_user import get_current_user
 
@@ -51,6 +51,7 @@ class CRUDRouter(SQLAlchemyCRUDRouter):
             update_route: Union[bool, DEPENDENCIES] = True,
             delete_one_route: Union[bool, DEPENDENCIES] = True,
             delete_all_route: Union[bool, DEPENDENCIES] = False,
+            bulk_delete_route: Union[bool, DEPENDENCIES] = True,
             search_route: Union[bool, DEPENDENCIES] = True,
             export_route: Union[bool, DEPENDENCIES] = True,
             import_route: Union[bool, DEPENDENCIES] = True,
@@ -98,6 +99,17 @@ class CRUDRouter(SQLAlchemyCRUDRouter):
                 summary="Delete One",
                 dependencies=delete_one_route,
                 error_responses=[NOT_FOUND],
+            )
+
+        # add bulk delete route
+        if bulk_delete_route:
+            self._add_api_route(
+                "/bulk_delete",
+                self._bulk_delete(),
+                methods=["POST"],
+                response_model=BulkDeleteResponse,
+                summary="Bulk Delete",
+                dependencies=bulk_delete_route,
             )
 
         # add search route
@@ -261,5 +273,16 @@ class CRUDRouter(SQLAlchemyCRUDRouter):
         ) -> dict:
             result = self.db_model.import_records(db, user, file, background_tasks=background_tasks)
             return result
+
+        return route
+
+    def _bulk_delete(self, *args: Any, **kwargs: Any) -> Callable:
+        def route(
+            db: Session = Depends(self.db_func),
+            user: UserModel = Depends(get_current_user),
+            search: Optional[SearchQuery] = None,
+            force: Optional[bool] = Query(default=False),
+        ) -> dict:
+            return self.db_model.bulk_delete(db, user, search, force)
 
         return route
