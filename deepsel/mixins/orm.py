@@ -12,7 +12,7 @@ from pydantic import BaseModel as PydanticModel
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, Enum, and_, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, Query
 from deepsel.utils.models_pool import models_pool
 from deepsel.utils.generate_crud_schemas import _get_relationships_class_map
 from deepsel.utils.get_relationships import get_relationships, get_one2many_parent_id
@@ -20,6 +20,7 @@ from deepsel.utils.check_delete_cascade import (
     AffectedRecordResult,
     get_delete_cascade_records_recursively,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,13 @@ class DeleteResponse(PydanticModel):
     success: bool
 
 
+class BulkDeleteResponse(DeleteResponse):
+    deleted_count: int = 0
+
+
 class ORMBaseMixin(object):
+    __mapper__ = None
+
     @declared_attr
     def __tablename__(cls):
         return cls.__name__.lower()
@@ -409,15 +416,8 @@ class ORMBaseMixin(object):
             )
 
         try:
-            # delete affected records
-            for table, items in affected_records.to_delete.items():
-                for item in items:
-                    db.delete(item.record)
-
-            # # set affected records to null
-            for table, items in affected_records.to_set_null.items():
-                for item in items:
-                    setattr(item.record, item.affected_field, None)
+            # Delete affected records
+            self._delete_affected_records(db, affected_records)
 
             db.delete(self)
             if commit:
@@ -541,103 +541,7 @@ class ORMBaseMixin(object):
         query = db.query(cls)
 
         if search:
-            for logical_operator, conditions in search.dict().items():
-                criteria_filters = []
-
-                for condition in conditions:
-                    field, operator, value = (
-                        condition["field"],
-                        condition["operator"],
-                        condition["value"],
-                    )
-
-                    model = cls
-                    # check for case field is attr1.attr2
-                    is_relationship = "." in field
-
-                    if is_relationship:
-                        fields = field.split(".")
-                        if not hasattr(cls, fields[0]):
-                            raise HTTPException(
-                                status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f'Relation "{fields[0]}" does not exist on this resource type',
-                            )
-                        relation = getattr(cls, fields[0])
-
-                        model = relation.property.mapper.class_
-                        field = fields[1]
-                        if not hasattr(relation.property.mapper.class_, fields[1]):
-                            raise HTTPException(
-                                status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f'Field "{field}" does not exist on this resource type',
-                            )
-                    elif not hasattr(cls, field):
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f'Field "{field}" does not exist on this resource type',
-                        )
-
-                    datetime_fields = list(
-                        filter(
-                            lambda x: x.type.python_type == datetime,
-                            model.__table__.columns,
-                        )
-                    )
-                    is_datetime = field in [col.name for col in datetime_fields]
-
-                    if is_datetime:
-                        value = parse_date(value)
-
-                    # check if field is enum, if yes the value should be the enum value
-                    if field in model.__table__.columns:
-                        column_type = model.__table__.columns[field].type
-                        if column_type.__class__.__name__ == "Enum":
-                            value = column_type.python_type(value)
-                    else:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f'Field "{field}" does not exist on this resource type',
-                        )
-
-                    condition_expr = None
-                    match operator:
-                        case "=":
-                            condition_expr = getattr(model, field) == value
-                        case "!=":
-                            condition_expr = getattr(model, field) != value
-                        case "in":
-                            if isinstance(value, list):
-                                condition_expr = getattr(model, field).in_(value)
-                        case ">":
-                            condition_expr = getattr(model, field) > value
-                        case ">=":
-                            condition_expr = getattr(model, field) >= value
-                        case "<":
-                            condition_expr = getattr(model, field) < value
-                        case "<=":
-                            condition_expr = getattr(model, field) <= value
-                        case "like":
-                            condition_expr = getattr(model, field).like(f"%{value}%")
-                        case "ilike":
-                            condition_expr = getattr(model, field).ilike(f"%{value}%")
-                        case _:
-                            # Handle unsupported operators or other cases here
-                            pass
-
-                    if condition_expr is not None:
-                        criteria_filters.append(condition_expr)
-                        if is_relationship:
-                            query = query.join(relation)
-
-                if criteria_filters:
-                    if logical_operator.lower() == "or":
-                        query = query.filter(or_(*criteria_filters))
-                    elif logical_operator.lower() == "and":
-                        query = query.filter(and_(*criteria_filters))
-
-                # check if any condition for "active" field, if not we filter by active=True
-                if not any([condition["field"] == "active" for condition in conditions]):
-                    query = query.filter_by(active=True)
+            query = cls._apply_search_conditions(query, search, db)
 
         if order_by:
             # check if field is in table
@@ -653,19 +557,108 @@ class ORMBaseMixin(object):
                 query = query.order_by(getattr(cls, order_by.field).desc())
 
         # build query based on permission scope, paginate, and return
-        if scope == PermissionScope.own:
-            if hasattr(cls, "owner_id"):
-                query = query.filter_by(owner_id=user.id)
-            elif cls.__tablename__ == "user":
-                query = query.filter_by(id=user.id)
-        elif (
-                scope == PermissionScope.org
-                and hasattr(cls, "organization_id")
-                and user.organization_id is not None
-        ):
-            query = query.filter_by(organization_id=user.organization_id)
+        query = cls._build_query_based_on_scope(query, user, scope)
 
         return {"total": query.count(), "data": query.offset(skip).limit(limit).all()}
+
+    @classmethod
+    def bulk_delete(
+            cls,
+            db: Session,
+            user: "UserModel",
+            search: SearchQuery,
+            force: Optional[bool] = False,
+            *args,
+            **kwargs,
+    ) -> BulkDeleteResponse:
+        """
+        Bulk delete with search query
+
+        @param db: The database session.
+        @param user: The user performing the action.
+        @param search: The search query.
+        @param force: Allow to delete referenced records
+        @param args:
+        @param kwargs:
+        @return: BulkDeleteResponse
+        """
+        [allowed, scope] = cls._check_has_permission(PermissionAction.delete, user)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to delete this resource type",
+            )
+
+        # Start a transaction
+        try:
+            # Get query
+            query = db.query(cls)
+
+            # apply search conditions to find deleting record
+            query = cls._apply_search_conditions(query, search, db)
+
+            # Build query based on permission scope, paginate, and return
+            query = cls._build_query_based_on_scope(query, user, scope)
+
+            # Delete referenced/effected records if force param is True
+            if force:
+                # Get the records to be deleted
+                records_to_delete = query.all()
+
+                # Get affected records
+                affected_records: AffectedRecordResult = get_delete_cascade_records_recursively(
+                    db, records=records_to_delete
+                )
+
+                # Delete affected records
+                cls._delete_affected_records(db, affected_records)
+
+            # Delete main records
+            deleted_count = query.delete(synchronize_session='fetch')
+            db.commit()
+
+            # Return the result
+            return BulkDeleteResponse(success=True, deleted_count=deleted_count)
+
+        except IntegrityError as e:
+            db.rollback()
+            message = str(e.orig)
+            detail = message.split("DETAIL:  ")[1]
+            logger.error(f"Error bulk deleting: {detail}\nFull traceback: {traceback.format_exc()}")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot delete records because they are referenced by other records (or due to other integrity "
+                       "errors).",
+            )
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error bulk deleting record: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"An error occurred while deleting records: {str(e)}",
+            )
+
+    @classmethod
+    def _delete_affected_records(cls, db: Session, affected_records: AffectedRecordResult):
+        """
+        Delete referenced/affected records.
+
+        @param db: The database session.
+        @param affected_records: The affected records these will be deleted.
+        @return: None
+        """
+
+        # Delete affected records
+        for table, items in affected_records.to_delete.items():
+            for item in items:
+                db.delete(item.record)
+            db.flush()
+
+        # Set affected records to null
+        for table, items in affected_records.to_set_null.items():
+            for item in items:
+                setattr(item.record, item.affected_field, None)
+            db.flush()
 
     @classmethod
     def _filter_permission(cls, permission: str) -> bool:
@@ -851,3 +844,142 @@ class ORMBaseMixin(object):
     @classmethod
     def get_class(cls):
         return cls
+
+    @classmethod
+    def _apply_search_conditions(cls, query: Query, search: SearchQuery, db: Session):
+        """
+        Apply search conditions to the query.
+        Modify query object with the search conditions.
+
+        @param query: The query object.
+        @param search: The search query.
+        @param db: The database session.
+        @return The modified query object.
+        """
+        for logical_operator, conditions in search.dict().items():
+            criteria_filters = []
+
+            for condition in conditions:
+                field, operator, value = (
+                    condition["field"],
+                    condition["operator"],
+                    condition["value"],
+                )
+
+                model = cls
+                # check for case field is attr1.attr2
+                is_relationship = "." in field
+
+                if is_relationship:
+                    fields = field.split(".")
+                    if not hasattr(cls, fields[0]):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f'Relation "{fields[0]}" does not exist on this resource type',
+                        )
+                    relation = getattr(cls, fields[0])
+
+                    model = relation.property.mapper.class_
+                    field = fields[1]
+                    if not hasattr(relation.property.mapper.class_, fields[1]):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f'Field "{field}" does not exist on this resource type',
+                        )
+                elif not hasattr(cls, field):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f'Field "{field}" does not exist on this resource type',
+                    )
+
+                datetime_fields = list(
+                    filter(
+                        lambda x: x.type.python_type == datetime,
+                        model.__table__.columns,
+                    )
+                )
+                is_datetime = field in [col.name for col in datetime_fields]
+
+                if is_datetime:
+                    value = parse_date(value)
+
+                # check if field is enum, if yes the value should be the enum value
+                if field in model.__table__.columns:
+                    column_type = model.__table__.columns[field].type
+                    if column_type.__class__.__name__ == "Enum":
+                        value = column_type.python_type(value)
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f'Field "{field}" does not exist on this resource type',
+                    )
+
+                condition_expr = None
+                match operator:
+                    case "=":
+                        condition_expr = getattr(model, field) == value
+                    case "!=":
+                        condition_expr = getattr(model, field) != value
+                    case "in":
+                        if isinstance(value, list):
+                            condition_expr = getattr(model, field).in_(value)
+                    case ">":
+                        condition_expr = getattr(model, field) > value
+                    case ">=":
+                        condition_expr = getattr(model, field) >= value
+                    case "<":
+                        condition_expr = getattr(model, field) < value
+                    case "<=":
+                        condition_expr = getattr(model, field) <= value
+                    case "like":
+                        condition_expr = getattr(model, field).like(f"%{value}%")
+                    case "ilike":
+                        condition_expr = getattr(model, field).ilike(f"%{value}%")
+                    case _:
+                        # Handle unsupported operators or other cases here
+                        pass
+
+                if condition_expr is not None:
+                    criteria_filters.append(condition_expr)
+                    if is_relationship:
+                        query = query.join(relation)
+
+            if criteria_filters:
+                if logical_operator.lower() == "or":
+                    query = query.filter(or_(*criteria_filters))
+                elif logical_operator.lower() == "and":
+                    query = query.filter(and_(*criteria_filters))
+
+            # check if any condition for "active" field, if not we filter by active=True
+            if not any([condition["field"] == "active" for condition in conditions]):
+                query = query.filter_by(active=True)
+
+        return query
+
+    @classmethod
+    def _build_query_based_on_scope(
+            cls,
+            query: Query,
+            user: "UserModel",
+            scope: PermissionScope
+    ) -> Query:
+        """
+        Build query based on permission scope and other conditions.
+
+        @param query: The query object.
+        @param user: The user performing the action.
+        @param scope: The permission scope.
+        @return: The modified query object.
+        """
+        if scope == PermissionScope.own:
+            if hasattr(cls, "owner_id"):
+                query = query.filter_by(owner_id=user.id)
+            elif cls.__tablename__ == "user":
+                query = query.filter_by(id=user.id)
+        elif (
+                scope == PermissionScope.org
+                and hasattr(cls, "organization_id")
+                and user.organization_id is not None
+        ):
+            query = query.filter_by(organization_id=user.organization_id)
+        return query
