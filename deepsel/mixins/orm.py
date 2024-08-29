@@ -563,13 +563,13 @@ class ORMBaseMixin(object):
 
     @classmethod
     def bulk_delete(
-            cls,
-            db: Session,
-            user: "UserModel",
-            search: SearchQuery,
-            force: Optional[bool] = False,
-            *args,
-            **kwargs,
+        cls,
+        db: Session,
+        user: "UserModel",
+        search: SearchQuery,
+        force: Optional[bool] = False,
+        *args,
+        **kwargs,
     ) -> BulkDeleteResponse:
         """
         Bulk delete with search query
@@ -600,35 +600,42 @@ class ORMBaseMixin(object):
             # Build query based on permission scope, paginate, and return
             query = cls._build_query_based_on_scope(query, user, scope)
 
+            # Get the records to be deleted
+            records_to_delete = query.all()
+
             # Delete referenced/effected records if force param is True
             if force:
-                # Get the records to be deleted
-                records_to_delete = query.all()
-
                 # Get affected records
-                affected_records: AffectedRecordResult = get_delete_cascade_records_recursively(
-                    db, records=records_to_delete
+                affected_records: AffectedRecordResult = (
+                    get_delete_cascade_records_recursively(
+                        db, records=records_to_delete
+                    )
                 )
 
                 # Delete affected records
                 cls._delete_affected_records(db, affected_records)
 
             # Delete main records
-            deleted_count = query.delete(synchronize_session='fetch')
+            for record in records_to_delete:
+                db.delete(record)
             db.commit()
 
             # Return the result
-            return BulkDeleteResponse(success=True, deleted_count=deleted_count)
+            return BulkDeleteResponse(
+                success=True, deleted_count=len(records_to_delete)
+            )
 
         except IntegrityError as e:
             db.rollback()
             message = str(e.orig)
             detail = message.split("DETAIL:  ")[1]
-            logger.error(f"Error bulk deleting: {detail}\nFull traceback: {traceback.format_exc()}")
+            logger.error(
+                f"Error bulk deleting: {detail}\nFull traceback: {traceback.format_exc()}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Cannot delete records because they are referenced by other records (or due to other integrity "
-                       "errors).",
+                "errors).",
             )
         except Exception as e:
             db.rollback()
@@ -639,7 +646,9 @@ class ORMBaseMixin(object):
             )
 
     @classmethod
-    def _delete_affected_records(cls, db: Session, affected_records: AffectedRecordResult):
+    def _delete_affected_records(
+        cls, db: Session, affected_records: AffectedRecordResult
+    ):
         """
         Delete referenced/affected records.
 
@@ -958,10 +967,7 @@ class ORMBaseMixin(object):
 
     @classmethod
     def _build_query_based_on_scope(
-            cls,
-            query: Query,
-            user: "UserModel",
-            scope: PermissionScope
+        cls, query: Query, user: "UserModel", scope: PermissionScope
     ) -> Query:
         """
         Build query based on permission scope and other conditions.
@@ -977,9 +983,9 @@ class ORMBaseMixin(object):
             elif cls.__tablename__ == "user":
                 query = query.filter_by(id=user.id)
         elif (
-                scope == PermissionScope.org
-                and hasattr(cls, "organization_id")
-                and user.organization_id is not None
+            scope == PermissionScope.org
+            and hasattr(cls, "organization_id")
+            and user.organization_id is not None
         ):
             query = query.filter_by(organization_id=user.organization_id)
         return query
