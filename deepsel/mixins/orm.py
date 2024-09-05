@@ -779,13 +779,13 @@ class ORMBaseMixin(object):
         for table, items in affected_records.to_delete.items():
             for item in items:
                 db.delete(item.record)
-            db.flush()
+        db.flush()
 
         # Set affected records to null
         for table, items in affected_records.to_set_null.items():
             for item in items:
                 setattr(item.record, item.affected_field, None)
-            db.flush()
+        db.flush()
 
     @classmethod
     def _filter_permission(cls, permission: str) -> bool:
